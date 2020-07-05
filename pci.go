@@ -35,51 +35,62 @@ type Function struct {
 
 type Device struct {
 	Number    string
-	Functions map[string]Function
+	Functions map[string]*Function
 }
 
 type Bus struct {
 	Number  string
-	Devices map[string]Device
+	Devices map[string]*Device
 }
 
 type Domain struct {
 	Number string
-	Buses  map[string]Bus
+	Buses  map[string]*Bus
 }
 
 func getFunctionInfo(dom, bus, dev, fun string) Function {
 	return Function{}
 }
 
-func enumeratePci() (map[string]Domain, error) {
-	// getPciInfo for every pci device
+func enumeratePci() (map[string]*Domain, error) {
 	sysBase := "/sys/devices/"
 	dirs, err := ioutil.ReadDir(sysBase)
-	domains := map[string]Domain{}
+	domains := map[string]*Domain{}
 	if err != nil {
 		return domains, err
 	}
 	for _, dir := range dirs {
+		// At /sys/devices/pci0000:00/
 		if strings.HasPrefix(dir.Name(), "pci") {
 			domStr := strings.Split(dir.Name()[3:], ":")[0]
-			domains[domStr] = Domain{Number: domStr}
+			domains[domStr] = &Domain{Number: domStr, Buses: map[string]*Bus{}}
 			subDirs, err := ioutil.ReadDir(filepath.Join(sysBase, dir.Name()))
 			if err != nil {
 				return domains, err
 			}
 
 			for _, sDir := range subDirs {
+				// At /sys/devices/pci0000:00/0000:00:00.0
 				if strings.HasPrefix(sDir.Name(), domStr) {
 					infoFiles, err := ioutil.ReadDir(filepath.Join(sysBase, dir.Name(), sDir.Name()))
 					if err != nil {
 						return domains, err
 					}
-					bdfStrings := strings.Split(sDir.Name(), ":")[1:]
-					devfunc := strings.Split(bdfStrings[1], ".")
-					bdfStrings = []string{bdfStrings[0], devfunc[0], devfunc[1]}
-					function := Function{Number: bdfStrings[2]}
+					busEtcStrings := strings.Split(sDir.Name(), ":")[1:]
+					bus, ok := domains[domStr].Buses[busEtcStrings[0]]
+					if !ok {
+						bus = &Bus{Number: busEtcStrings[0], Devices: map[string]*Device{}}
+						domains[domStr].Buses[busEtcStrings[0]] = bus
+					}
+					devFuncStrings := strings.Split(busEtcStrings[1], ".")
+					dev, ok := bus.Devices[devFuncStrings[0]]
+					if !ok {
+						dev = &Device{Number: devFuncStrings[0], Functions: map[string]*Function{}}
+						bus.Devices[devFuncStrings[0]] = dev
+					}
+					function := &Function{Number: devFuncStrings[1]}
 					for _, f := range infoFiles {
+						// At /sys/devices/pci0000:00/0000:00:00.0/*
 						switch f.Name() {
 						case "class":
 							function.Class = fileString(filepath.Join(sysBase, dir.Name(), sDir.Name(), f.Name()))
@@ -105,49 +116,29 @@ func enumeratePci() (map[string]Domain, error) {
 							function.Vendor = fileString(filepath.Join(sysBase, dir.Name(), sDir.Name(), f.Name()))
 						}
 					}
-					if bus, ok := domains[domStr].Buses[bdfStrings[0]]; ok {
-						fmt.Println("if 1")
-						if device, ok := bus.Devices[bdfStrings[1]]; ok {
-							fmt.Println("if 2")
-							if funct, ok := device.Functions[function.Number]; ok {
-								fmt.Println("if 3")
-								fmt.Printf("redundant function:\n%v\n", funct)
-								//this shouldn't happen, functions shouldn't be repeated in a
-								//device
-							} else {
-								fmt.Println("else 3")
-								funct = function
-							}
-						} else {
-							fmt.Println("else 2")
-							funcs := map[string]Function{function.Number: function}
-							device = Device{Number: bdfStrings[1], Functions: funcs}
-							devices := map[string]Device{device.Number: device}
-							//domains[domStr].Buses[bdfStrings[0]].Devices = map[string]Device{device.Number: device} // TODO breaks
-							// cannot assign to struct field domains[domStr].Buses[bdfStrings[0]].Devices in map
-							// there has to be a better way!
-						}
-					} else {
-						fmt.Println("else 1")
-						funcs := map[string]Function{function.Number: function}
-						device := Device{Number: bdfStrings[1], Functions: funcs}
-						devices := map[string]Device{device.Number: device}
-						bus = Bus{Number: bdfStrings[0], Devices: devices}
-						dom := domains[domStr]
-						dom.Buses = map[string]Bus{bus.Number: bus}
-						domains[domStr] = dom
-					}
-
+					dev.Functions[function.Number] = function
 				}
 			}
 		}
 	}
-	fmt.Println(domains["0000"].Buses)
+	// debug: print all the map
+	for _, bus := range domains["0000"].Buses {
+		fmt.Printf("Bus %v:", bus.Number)
+		for _, device := range bus.Devices {
+			fmt.Printf("Device %v:", device.Number)
+			for _, fun := range device.Functions {
+				fmt.Printf("Func %v:", fun.Number)
+				fmt.Println(fun.Device)
+			}
+		}
+	}
 	return domains, err
 }
 
 func Dump() {
-	enumeratePci()
+	if _, err := enumeratePci(); err != nil {
+		fmt.Println(err)
+	}
 }
 
 func DumpHuman() {
