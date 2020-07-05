@@ -9,20 +9,22 @@ import (
 )
 
 type Function struct {
+	// TODO are these all the most interesting files?
+	// need to choose best types (vs using all strings)
 	Number string
 	// SysFS Path:
 	// /sys/devices/pciNNNN:NN/NNNN:NN:NN.N/
 	//          .../pciDOMAIN:BUS/DOMAIN:BUS:DEVICE.FUNCTION
 	Class           string `json:"class,omitempty"`            //		   PCI class (ascii, ro)
+	Revision        string `json:"revision,omitempty"`         //PCI revision (ascii, ro)
+	Vendor          string `json:"vendor,omitempty"`           //		   PCI vendor (ascii, ro)
 	Device          string `json:"device,omitempty"`           //	   PCI device (ascii, ro)
+	SubsystemVendor string `json:"subsystem_vendor,omitempty"` //	   PCI subsystem vendor (ascii, ro)
+	SubsystemDevice string `json:"subsystem_device,omitempty"` //	   PCI subsystem device (ascii, ro)
 	Enable          uint16 `json:"enable,omitempty"`           //big enough?           //	           Whether the device is enabled (ascii, rw)
 	Irq             string `json:"irq,omitempty"`              //		   IRQ number (ascii, ro)
 	LocalCpus       string `json:"local_cpus,omitempty"`       //	   nearby CPU mask (cpumask, ro)
-	Resource        string `json:"resource,omitempty"`         //		   PCI resource host addresses (ascii, ro)
-	Revision        string `json:"revision,omitempty"`         //PCI revision (ascii, ro)
-	SubsystemDevice string `json:"subsystem_device,omitempty"` //	   PCI subsystem device (ascii, ro)
-	SubsystemVendor string `json:"subsystem_vendor,omitempty"` //	   PCI subsystem vendor (ascii, ro)
-	Vendor          string `json:"vendor,omitempty"`           //		   PCI vendor (ascii, ro)
+	//Resource        string `json:"resource,omitempty"`         //		   PCI resource host addresses (ascii, ro)
 	//Config     string //		   PCI config space (binary, rw)
 	//Remove     string //		   remove device from kernel's list (ascii, wo)
 	//Resource0..N	   PCI resource N, if present (binary, mmap, rw[1])
@@ -31,6 +33,12 @@ type Function struct {
 	// the previous are the files described in the kernel.org docs:
 	// https://www.kernel.org/doc/Documentation/filesystems/sysfs-pci.txt
 	// but my computer has more files....
+	//
+	// TODO read 'uevent' instead of class/device/vendor files?
+	// 'uevent' file has driver (in use), class, id (vendor:device
+	// pair), subsystem id (v:d pair), pci slot, modalias.
+	// Probably easier to pull from oneline files instead of chopping up
+	// uevent lines
 }
 
 type Device struct {
@@ -48,8 +56,40 @@ type Domain struct {
 	Buses  map[string]*Bus
 }
 
-func getFunctionInfo(dom, bus, dev, fun string) Function {
-	return Function{}
+func getFunctionInfo(path string) (*Function, error) {
+	fun := &Function{}
+	infoFiles, err := ioutil.ReadDir(path)
+	if err != nil {
+		return fun, err
+	}
+	for _, f := range infoFiles {
+		// At /sys/devices/pci0000:00/0000:00:00.0/*
+		switch f.Name() {
+		case "class":
+			fun.Class = fileString(filepath.Join(path, f.Name()))
+		case "vendor":
+			fun.Vendor = fileString(filepath.Join(path, f.Name()))
+		case "device":
+			fun.Device = fileString(filepath.Join(path, f.Name()))
+		case "enable":
+			if enable, err := strconv.ParseUint(fileString(filepath.Join(path, f.Name())), 10, 16); err == nil {
+				fun.Enable = uint16(enable)
+			}
+		//case "irq":
+		//	fun.Irq = fileString(filepath.Join(path, f.Name()))
+		//case "local_cpus":
+		//	fun.LocalCpus = fileString(filepath.Join(path, f.Name()))
+		//case "resource":
+		//	fun.Resource = fileString(filepath.Join(path, f.Name()))
+		case "revision":
+			fun.Revision = fileString(filepath.Join(path, f.Name()))
+		case "subsystem_vendor":
+			fun.SubsystemVendor = fileString(filepath.Join(path, f.Name()))
+		case "subsystem_device":
+			fun.SubsystemDevice = fileString(filepath.Join(path, f.Name()))
+		}
+	}
+	return fun, nil
 }
 
 func enumeratePci() (map[string]*Domain, error) {
@@ -72,10 +112,6 @@ func enumeratePci() (map[string]*Domain, error) {
 			for _, sDir := range subDirs {
 				// At /sys/devices/pci0000:00/0000:00:00.0
 				if strings.HasPrefix(sDir.Name(), domStr) {
-					infoFiles, err := ioutil.ReadDir(filepath.Join(sysBase, dir.Name(), sDir.Name()))
-					if err != nil {
-						return domains, err
-					}
 					busEtcStrings := strings.Split(sDir.Name(), ":")[1:]
 					bus, ok := domains[domStr].Buses[busEtcStrings[0]]
 					if !ok {
@@ -88,47 +124,13 @@ func enumeratePci() (map[string]*Domain, error) {
 						dev = &Device{Number: devFuncStrings[0], Functions: map[string]*Function{}}
 						bus.Devices[devFuncStrings[0]] = dev
 					}
-					function := &Function{Number: devFuncStrings[1]}
-					for _, f := range infoFiles {
-						// At /sys/devices/pci0000:00/0000:00:00.0/*
-						switch f.Name() {
-						case "class":
-							function.Class = fileString(filepath.Join(sysBase, dir.Name(), sDir.Name(), f.Name()))
-						case "device":
-							function.Device = fileString(filepath.Join(sysBase, dir.Name(), sDir.Name(), f.Name()))
-						case "enable":
-							if enable, err := strconv.ParseUint(fileString(filepath.Join(sysBase, dir.Name(), sDir.Name(), f.Name())), 10, 16); err == nil {
-								function.Enable = uint16(enable)
-							}
-						case "irq":
-							function.Irq = fileString(filepath.Join(sysBase, dir.Name(), sDir.Name(), f.Name()))
-						case "local_cpus":
-							function.LocalCpus = fileString(filepath.Join(sysBase, dir.Name(), sDir.Name(), f.Name()))
-						case "resource":
-							function.Resource = fileString(filepath.Join(sysBase, dir.Name(), sDir.Name(), f.Name()))
-						case "revision":
-							function.Revision = fileString(filepath.Join(sysBase, dir.Name(), sDir.Name(), f.Name()))
-						case "subsystem_device":
-							function.SubsystemDevice = fileString(filepath.Join(sysBase, dir.Name(), sDir.Name(), f.Name()))
-						case "subsystem_vendor":
-							function.SubsystemVendor = fileString(filepath.Join(sysBase, dir.Name(), sDir.Name(), f.Name()))
-						case "vendor":
-							function.Vendor = fileString(filepath.Join(sysBase, dir.Name(), sDir.Name(), f.Name()))
-						}
+					function, err := getFunctionInfo(filepath.Join(sysBase, dir.Name(), sDir.Name()))
+					if err != nil {
+						return domains, err
 					}
+					function.Number = devFuncStrings[1]
 					dev.Functions[function.Number] = function
 				}
-			}
-		}
-	}
-	// debug: print all the map
-	for _, bus := range domains["0000"].Buses {
-		fmt.Printf("Bus %v:", bus.Number)
-		for _, device := range bus.Devices {
-			fmt.Printf("Device %v:", device.Number)
-			for _, fun := range device.Functions {
-				fmt.Printf("Func %v:", fun.Number)
-				fmt.Println(fun.Device)
 			}
 		}
 	}
@@ -136,8 +138,21 @@ func enumeratePci() (map[string]*Domain, error) {
 }
 
 func Dump() {
-	if _, err := enumeratePci(); err != nil {
+	// debug: print all the maps
+	// not printing very pretty
+	domains, err := enumeratePci()
+	if err != nil {
 		fmt.Println(err)
+	}
+	for _, dom := range domains {
+		for _, bus := range dom.Buses {
+			for _, device := range bus.Devices {
+				for _, fun := range device.Functions {
+					fmt.Printf("Dom: %v Bus %v: Device %v: Func %v:", dom.Number, bus.Number, device.Number, fun.Number)
+					fmt.Println(fun)
+				}
+			}
+		}
 	}
 }
 
@@ -146,5 +161,6 @@ func DumpHuman() {
 }
 
 func getVendorString(hexString string) string {
+	// Function.Vendor --> human readable
 	return ""
 }
